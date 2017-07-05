@@ -6,12 +6,13 @@ import (
 	"os/exec"
 	"sync"
 
+	"io"
+
 	"github.com/bwmarrin/discordgo"
 	"github.com/nhooyr/botatouille/digo/argument"
 	"github.com/nhooyr/botatouille/digo/command"
 	"github.com/nhooyr/log"
-	"fmt"
-	"io"
+	"runtime"
 )
 
 type music struct {
@@ -64,45 +65,33 @@ func (m *music) join(ctx *command.Context) error {
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Printf("volume=%f", 65/100)
 		ffmpeg := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "quiet", "-i", "pipe:0",
 			"-f", "data", "-map", "0:a", "-ar", "48k", "-ac", "2",
-			"-af", fmt.Sprintf("volume=0.65"),
 			"-acodec", "libopus", "-b:a", "128k", "pipe:1")
 		ffmpeg.Stdin = rickRoll
 		ffmpegOut, err := ffmpeg.StdoutPipe()
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer log.Print("dooni")
+		framesChan := make(chan []byte, 100000)
+		go func() {
+			for {
+				voiceCon.OpusSend <- <-framesChan
+			}
+		}()
+		runtime.LockOSThread()
 		err = youtubeDL.Start()
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer log.Print("dooni")
-		frames := make([][]byte, 0, 1000)
-		var framesLock sync.Mutex
-		go func() {
-			for {
-				if len(frames) > 0 {
-					framesLock.Lock()
-					frame := frames[0]
-					frames = frames[1:]
-					framesLock.Unlock()
-					voiceCon.OpusSend <- frame
-				}
-			}
-		}()
 		err = ffmpeg.Start()
 		if err != nil {
 			log.Fatal(err)
 		}
-		// TODO do I need to do this?
-		err = voiceCon.Speaking(true)
-		if err != nil {
-			log.Fatal(err)
-		}
 		for {
-			p := make([]byte, 4000)
+			// I read in the RFC that frames will not be bigger than this size
+			p := make([]byte, 1275)
 			n, err := ffmpegOut.Read(p)
 			if err != nil {
 				if err == io.EOF {
@@ -110,9 +99,7 @@ func (m *music) join(ctx *command.Context) error {
 				}
 				log.Fatal(err)
 			}
-			framesLock.Lock()
-			frames = append(frames, p[:n])
-			framesLock.Unlock()
+			framesChan <- p[:n]
 		}
 	}()
 	m.setVoiceCon(guildID, voiceCon)
