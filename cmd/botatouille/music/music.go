@@ -79,10 +79,17 @@ func (m *music) join(ctx *command.Context) error {
 			log.Fatal(err)
 		}
 		defer log.Print("dooni")
-		opusChan := make(chan []byte, 100000)
+		frames := make([][]byte, 0, 1000)
+		var framesLock sync.Mutex
 		go func() {
 			for {
-				voiceCon.OpusSend <- <-opusChan
+				if len(frames) > 0 {
+					framesLock.Lock()
+					frame := frames[0]
+					frames = frames[1:]
+					framesLock.Unlock()
+					voiceCon.OpusSend <- frame
+				}
 			}
 		}()
 		err = ffmpeg.Start()
@@ -103,7 +110,9 @@ func (m *music) join(ctx *command.Context) error {
 				}
 				log.Fatal(err)
 			}
-			opusChan <- p[:n]
+			framesLock.Lock()
+			frames = append(frames, p[:n])
+			framesLock.Unlock()
 		}
 	}()
 	m.setVoiceCon(guildID, voiceCon)
