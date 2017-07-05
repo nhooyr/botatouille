@@ -1,8 +1,8 @@
-package command_test
+package command
 
 import (
 	"testing"
-	"github.com/nhooyr/botatouille/command"
+	"github.com/nhooyr/botatouille/digo/commandmmand"
 )
 
 func TestIs(t *testing.T) {

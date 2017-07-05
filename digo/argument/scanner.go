@@ -2,8 +2,8 @@ package argument
 
 import (
 	"bytes"
-	"io"
 	"errors"
+	"io"
 )
 
 type Scanner struct {
@@ -36,15 +36,20 @@ func (s *Scanner) Scan() (err error) {
 	if err != nil {
 		return s.err
 	} else if s.cmdLine == "" {
-		return io.EOF
+		return ErrUnexpectedEnd
 	}
-	s.buf.Reset()
+	s.reset()
 	s.run()
 	s.cmdLine = s.cmdLine[s.pos:]
 	if s.err != nil {
 		return s.err
 	}
 	return nil
+}
+
+func (s *Scanner) reset() {
+	s.buf.Reset()
+	s.pos = 0
 }
 
 func (s *Scanner) run() {
@@ -96,7 +101,10 @@ func scanText(s *Scanner) stateFn {
 	}
 }
 
-var ErrUnexpectedBackspace = errors.New("unexpected end of string, incomplete escape sequence")
+var (
+	ErrUnexpectedBackspace = errors.New("You need to have a character after the backspace.")
+	ErrUnexpectedEnd = errors.New("I need moar.")
+)
 
 // TODO can add special escape sequences, idk if I'll ever need to. On the fence about these semantics. If I choose not to and remove s.err, then I'll change Scanner.Scan() to return a boolean instead of an error
 func scanBackslash(s *Scanner) stateFn {

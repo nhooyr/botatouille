@@ -1,9 +1,9 @@
-package argument_test
+package argument
 
 import (
 	"testing"
 	"io"
-	"github.com/nhooyr/botatouille/argument"
+	"github.com/nhooyr/botatouille/digo/argumentument"
 )
 
 func TestScanner(t *testing.T) {
