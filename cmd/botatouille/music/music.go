@@ -3,17 +3,15 @@ package music
 import (
 	"errors"
 
-	"log"
 	"os/exec"
 	"sync"
-
-	"bufio"
-	"encoding/binary"
-	"io"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/nhooyr/botatouille/digo/argument"
 	"github.com/nhooyr/botatouille/digo/command"
+	"github.com/nhooyr/log"
+	"fmt"
+	"io"
 )
 
 type music struct {
@@ -66,30 +64,46 @@ func (m *music) join(ctx *command.Context) error {
 		if err != nil {
 			log.Fatal(err)
 		}
-
+		log.Printf("volume=%f", 65/100)
+		ffmpeg := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "quiet", "-i", "pipe:0",
+			"-f", "data", "-map", "0:a", "-ar", "48k", "-ac", "2",
+			"-af", fmt.Sprintf("volume=0.65"),
+			"-acodec", "libopus", "-b:a", "128k", "pipe:1")
+		ffmpeg.Stdin = rickRoll
+		ffmpegOut, err := ffmpeg.StdoutPipe()
+		if err != nil {
+			log.Fatal(err)
+		}
 		err = youtubeDL.Start()
 		if err != nil {
 			log.Fatal(err)
 		}
-
-		// Create opus stream
-		stream, err := convertToOpus(rickRoll)
+		defer log.Print("dooni")
+		opusChan := make(chan []byte, 100000)
+		go func() {
+			for {
+				voiceCon.OpusSend <- <-opusChan
+			}
+		}()
+		err = ffmpeg.Start()
 		if err != nil {
 			log.Fatal(err)
 		}
-
-		// Loop until the audio is done playing.
+		// TODO do I need to do this?
+		err = voiceCon.Speaking(true)
+		if err != nil {
+			log.Fatal(err)
+		}
 		for {
-			opus, err := readOpus(stream)
+			p := make([]byte, 4000)
+			n, err := ffmpegOut.Read(p)
 			if err != nil {
-				if err == io.ErrUnexpectedEOF || err == io.EOF {
+				if err == io.EOF {
 					return
 				}
-				log.Print(err)
-				return
+				log.Fatal(err)
 			}
-
-			voiceCon.OpusSend <- opus
+			opusChan <- p[:n]
 		}
 	}()
 	m.setVoiceCon(guildID, voiceCon)
@@ -147,65 +161,4 @@ func (m *music) leave(ctx *command.Context) error {
 		return errors.New("Not connected.")
 	}
 	return voiceCon.Disconnect()
-}
-
-// Reads an opus packet to send over the vc.OpusSend channel
-func readOpus(source io.Reader) ([]byte, error) {
-	var opuslen int16
-	err := binary.Read(source, binary.LittleEndian, &opuslen)
-	if err != nil {
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			return nil, err
-		}
-		return nil, errors.New("ERR reading opus header")
-	}
-
-	var opusframe = make([]byte, opuslen)
-	err = binary.Read(source, binary.LittleEndian, &opusframe)
-	if err != nil {
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			return nil, err
-		}
-		return nil, errors.New("ERR reading opus frame")
-	}
-
-	return opusframe, nil
-}
-
-// convertToOpus converts the given io.Reader stream to an Opus stream
-// Using ffmpeg and dca-rs
-func convertToOpus(rd io.Reader) (io.Reader, error) {
-
-	// Convert to a format that can be passed to dca-rs
-	ffmpeg := exec.Command("ffmpeg", "-i", "pipe:0", "-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1")
-	ffmpeg.Stdin = rd
-	ffmpegout, err := ffmpeg.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert to opus
-	// TODO maybe use dca-rs later? https://github.com/bwmarrin/dca
-	dca := exec.Command("dca", "--raw", "-i", "pipe:0")
-	dca.Stdin = ffmpegout
-	dcaout, err := dca.StdoutPipe()
-	dcabuf := bufio.NewReaderSize(dcaout, 1024)
-	if err != nil {
-		return nil, err
-	}
-
-	// Start ffmpeg
-	err = ffmpeg.Start()
-	if err != nil {
-		return nil, err
-	}
-
-	// Start dca-rs
-	err = dca.Start()
-	if err != nil {
-		return nil, err
-	}
-
-	// Returns a stream of opus data
-	return dcabuf, nil
 }
