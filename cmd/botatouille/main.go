@@ -14,15 +14,12 @@ import (
 	"github.com/nhooyr/log"
 )
 
-const (
-	token = "MzI2Njk3ODYyNTEzODE5NjQ4.DDtpBQ.j1gzyic1VG3If3yYpUPoWmpVOLw"
-	game  = "yo mom"
-)
+const game  = "yo mom"
 
 var r = command.NewRouter("", "")
 
 func main() {
-	dg, err := discordgo.New("Bot " + token)
+	dg, err := discordgo.New("Bot " + os.Getenv("DiscordToken"))
 	if err != nil {
 		log.Fatal(err)
 		return

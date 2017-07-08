@@ -1,40 +1,34 @@
 package music
 
 import (
-	"errors"
-
-	"os/exec"
 	"sync"
-
-	"io"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/nhooyr/botatouille/digo/argument"
 	"github.com/nhooyr/botatouille/digo/command"
-	"github.com/nhooyr/log"
-	"runtime"
+	"errors"
 )
 
 type music struct {
-	voiceCons map[string]*discordgo.VoiceConnection
+	guildMusics map[string]*guildMusic
 	sync.RWMutex
 }
 
-func (m *music) setVoiceCon(guildID string, voiceCon *discordgo.VoiceConnection) {
+func newMusic() *music {
+	return &music{guildMusics: make(map[string]*guildMusic)}
+}
+
+func (m *music) setGuildMusic(guildID string, gm *guildMusic) {
 	m.Lock()
-	m.voiceCons[guildID] = voiceCon
+	m.guildMusics[guildID] = gm
 	m.Unlock()
 }
 
-func (m *music) getVoiceCon(guildID string) (*discordgo.VoiceConnection, bool) {
+func (m *music) getGuildMusic(guildID string) (*guildMusic, bool) {
 	m.RLock()
-	voiceCon, ok := m.voiceCons[guildID]
+	gm, ok := m.guildMusics[guildID]
 	m.RUnlock()
-	return voiceCon, ok
-}
-
-func newMusic() *music {
-	return &music{voiceCons: make(map[string]*discordgo.VoiceConnection)}
+	return gm, ok
 }
 
 func (m *music) join(ctx *command.Context) error {
@@ -53,76 +47,36 @@ func (m *music) join(ctx *command.Context) error {
 		return err
 	}
 
-	// TODO do I need voice.ChangeChannel
 	voiceCon, err := ctx.DG.ChannelVoiceJoin(guildID, channelID, false, false)
 	if err != nil {
 		return err
 	}
 
-	go func() {
-		youtubeDL := exec.Command("youtube-dl", "-q", "-f", "bestaudio", "-o", "-", "https://youtu.be/dQw4w9WgXcQ")
-		rickRoll, err := youtubeDL.StdoutPipe()
-		if err != nil {
-			log.Fatal(err)
-		}
-		ffmpeg := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "quiet", "-i", "pipe:0",
-			"-f", "data", "-map", "0:a", "-ar", "48k", "-ac", "2",
-			"-acodec", "libopus", "-b:a", "128k", "pipe:1")
-		ffmpeg.Stdin = rickRoll
-		ffmpegOut, err := ffmpeg.StdoutPipe()
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer log.Print("dooni")
-		framesChan := make(chan []byte, 100000)
-		go func() {
-			for {
-				voiceCon.OpusSend <- <-framesChan
-			}
-		}()
-		runtime.LockOSThread()
-		err = youtubeDL.Start()
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = ffmpeg.Start()
-		if err != nil {
-			log.Fatal(err)
-		}
-		for {
-			// I read in the RFC that frames will not be bigger than this size
-			p := make([]byte, 1275)
-			n, err := ffmpegOut.Read(p)
-			if err != nil {
-				if err == io.EOF {
-					return
-				}
-				log.Fatal(err)
-			}
-			framesChan <- p[:n]
-		}
-	}()
-	m.setVoiceCon(guildID, voiceCon)
+	gm := newGuildMusic(voiceCon)
+	m.setGuildMusic(guildID, gm)
 	return nil
 }
 
-// TODO https://github.com/bwmarrin/discordgo/wiki/FAQ#finding-a-users-voice-channel
 func findAuthorGuild(ctx *command.Context) (*discordgo.Guild, error) {
-	ch, err := ctx.DG.State.Channel(ctx.M.ChannelID)
-	if err != nil {
-		return nil, err
+	for _, g := range ctx.DG.State.Guilds {
+		for _, c := range g.Channels {
+			if c.ID == ctx.M.ChannelID {
+				return g, nil
+			}
+		}
 	}
-	return ctx.DG.State.Guild(ch.GuildID)
+	// TODO crazy
+	return nil, errors.New("Unable to find your guild. Crazy, please report to Anmol.")
 }
 
 func findAuthorVoiceChannel(ctx *command.Context) (string, string, error) {
-	g, err := findAuthorGuild(ctx)
-	if err != nil {
-		return "", "", err
-	}
-	for _, vs := range g.VoiceStates {
-		if vs.UserID == ctx.M.Author.ID {
-			return g.ID, vs.ChannelID, nil
+	// One nuance of this method is that it allows the bot to join another guild's
+	// voice connection when being controlled from a different guild if you are there.
+	for _, g := range ctx.DG.State.Guilds {
+		for _, vs := range g.VoiceStates {
+			if vs.UserID == ctx.M.Author.ID {
+				return g.ID, vs.ChannelID, nil
+			}
 		}
 	}
 	return "", "", errors.New("Please join a voice channel or specify one.")
@@ -134,27 +88,38 @@ func findVoiceChannel(ctx *command.Context, name string) (string, string, error)
 		return "", "", err
 	}
 	for _, ch := range g.Channels {
-		if ch.Name == name {
+		if ch.Name == name && ch.Type == "voice" {
 			return g.ID, ch.ID, nil
 		}
 	}
 	return "", "", errors.New("Requested voice channel not found.")
 }
 
-func (m *music) leave(ctx *command.Context) error {
+func (m *music) findGuildMusic(ctx *command.Context) (*guildMusic, error) {
 	g, err := findAuthorGuild(ctx)
+	if err != nil {
+		return nil, err
+	}
+	gm, ok := m.getGuildMusic(g.ID)
+	if !ok {
+		return nil, errors.New("Not connected.")
+	}
+	return gm, nil
+}
+
+func (m *music) leave(ctx *command.Context) error {
+	gm, err := m.findGuildMusic(ctx)
 	if err != nil {
 		return err
 	}
-	voiceCon, ok := m.getVoiceCon(g.ID)
-	if !ok {
-		return errors.New("Not connected.")
+	return gm.stop()
+}
+
+func (m *music) add(ctx *command.Context) error {
+	gm, err := m.findGuildMusic(ctx)
+	if err != nil {
+		return err
 	}
-	voiceCon.RLock()
-	ready := voiceCon.Ready
-	voiceCon.RUnlock()
-	if !ready {
-		return errors.New("Not connected.")
-	}
-	return voiceCon.Disconnect()
+	gm.q.append(&video{id: "dQw4w9WgXcQ"})
+	return nil
 }
